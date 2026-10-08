@@ -1,0 +1,56 @@
+# docker compose up --build
+#   db  : PostgreSQL 16 seeded with the demo warehouse (db/init/*.sql run on first start)
+#   api : FastAPI + LangGraph agent  -> http://localhost:8000/docs
+#   ui  : Streamlit front-end        -> http://localhost:8501
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: warehouse_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-warehouse_admin}
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse_admin -d warehouse"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The agent only ever connects as the read-only role created in db/init/03_readonly_role.sql.
+      WAREHOUSE_DSN: postgresql://analyst_ro:analyst_ro@db:5432/warehouse
+      AS_OF_DATE: ${AS_OF_DATE:-2024-12-31}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ui:
+    build: .
+    command: ["streamlit", "run", "src/sqlagent/ui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    environment:
+      API_URL: http://api:8000
+      API_KEY: ${API_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+
+volumes:
+  pgdata:
